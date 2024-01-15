@@ -13,7 +13,7 @@ type Type1 struct {
 
 type Type2 struct {
 	ID    int
-	Value []byte
+	Value string
 }
 
 type MyStructure struct {
@@ -44,7 +44,7 @@ func main() {
 			Tag:        1,
 			IsCompound: true,
 			Bytes: func() []byte {
-				b, _ := asn1.Marshal(Type2{ID: 43, Value: []byte("Hello, ASN.1!")})
+				b, _ := asn1.Marshal(Type2{ID: 43, Value: "Hello, ASN.1!"})
 				return b
 			}(),
 		},
