@@ -44,14 +44,16 @@ func (ia5String IA5String) GeneralName(tag int) (generalName asn1.RawValue) {
 
 type GeneralName asn1.RawValue
 
+type KeyIdentifier []byte
+
 type PKIHeader struct {
 	PVNO          int
 	Sender        asn1.RawValue
 	Recipient     asn1.RawValue
 	MessageTime   time.Time                `asn1:"generalized,explicit,optional,tag:0,omitempty"`
 	ProtectionAlg pkix.AlgorithmIdentifier `asn1:"explicit,optional,tag:1,omitempty"`
-	//SendKID       any                          `asn1:"optional,tag:2,omitempty"`
-	//RecipKID      any                          `asn1:"optional,tag:3,omitempty"`
+	SendKID       KeyIdentifier            `asn1:"optional,tag:2,omitempty"`
+	RecipKID      KeyIdentifier            `asn1:"optional,tag:3,omitempty"`
 	//TransactionID []byte                       `asn1:"optional,tag:4,omitempty"`
 	//SenderNonce   []byte                       `asn1:"optional,tag:5,omitempty"`
 	//RecipNonce    []byte                       `asn1:"optional,tag:6,omitempty"`

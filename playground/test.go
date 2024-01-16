@@ -55,11 +55,13 @@ func main() {
 					{Type: asn1.ObjectIdentifier{2, 5, 4, 10}, Value: organization}},
 				[]pkix.AttributeTypeAndValue{
 					{Type: asn1.ObjectIdentifier{2, 5, 4, 3}, Value: commonName}}}).GeneralName(4),
-			MessageTime:   time.Now(),
+			MessageTime: time.Now(),
 			ProtectionAlg: pkix.AlgorithmIdentifier{
-				Algorithm:  asn1.ObjectIdentifier{ 1,2,840,113533,7,66,13 }, // --> https://github.com/zjj/golibkit/blob/main/certutil/helper.go
+				Algorithm:  asn1.ObjectIdentifier{1, 2, 840, 113533, 7, 66, 13}, // --> https://github.com/zjj/golibkit/blob/main/certutil/helper.go
 				Parameters: asn1.NullRawValue,
 			},
+			SendKID:  []byte{},
+			RecipKID: []byte{},
 		},
 		Body:       []int{},
 		Protection: PKIProtection{},
