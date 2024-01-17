@@ -40,6 +40,68 @@ var (
 )
 
 /*
+   PKIBody ::= CHOICE {       -- message-specific body elements
+       ir       [0]  CertReqMessages,        --Initialization Request
+       ip       [1]  CertRepMessage,         --Initialization Response
+       cr       [2]  CertReqMessages,        --Certification Request
+       cp       [3]  CertRepMessage,         --Certification Response
+       p10cr    [4]  CertificationRequest,   --imported from [PKCS10]
+       popdecc  [5]  POPODecKeyChallContent, --pop Challenge
+       popdecr  [6]  POPODecKeyRespContent,  --pop Response
+       kur      [7]  CertReqMessages,        --Key Update Request
+       kup      [8]  CertRepMessage,         --Key Update Response
+       krr      [9]  CertReqMessages,        --Key Recovery Request
+       krp      [10] KeyRecRepContent,       --Key Recovery Response
+       rr       [11] RevReqContent,          --Revocation Request
+       rp       [12] RevRepContent,          --Revocation Response
+       ccr      [13] CertReqMessages,        --Cross-Cert. Request
+       ccp      [14] CertRepMessage,         --Cross-Cert. Response
+       ckuann   [15] CAKeyUpdAnnContent,     --CA Key Update Ann.
+       cann     [16] CertAnnContent,         --Certificate Ann.
+       rann     [17] RevAnnContent,          --Revocation Ann.
+       crlann   [18] CRLAnnContent,          --CRL Announcement
+       pkiconf  [19] PKIConfirmContent,      --Confirmation
+       nested   [20] NestedMessageContent,   --Nested Message
+       genm     [21] GenMsgContent,          --General Message
+       genp     [22] GenRepContent,          --General Response
+       error    [23] ErrorMsgContent,        --Error Message
+       certConf [24] CertConfirmContent,     --Certificate confirm
+       pollReq  [25] PollReqContent,         --Polling request
+       pollRep  [26] PollRepContent          --Polling response
+   }
+*/
+
+const (
+	InitializationRequest = iota
+	InitializationResponse
+	CertificationRequest
+	CertificationResponse
+	PKCS10CertificationRequest
+	POPChallenge
+	POPResponse
+	KeyUpdateRequest
+	KeyUpdateResponse
+	KeyRecoveryRequest
+	KeyRecoveryResponse
+	RevocationRequest
+	RevocationResponse
+	CrossCertRequest
+	CrossCertResponse
+	CAKeyUpdateAnnouncement
+	CertificateAnnouncement
+	RevocationAnnouncement
+	CRLAnnouncement
+	Confirmation
+	NestedMessage
+	GeneralMessage
+	GeneralResponse
+	ErrorMessage
+	CertificateConfirm
+	PollingRequest
+	PollingResponse
+)
+
+/*
    PKIFreeText ::= SEQUENCE SIZE (1..MAX) OF UTF8String
        -- text encoded as UTF-8 String [RFC3629] (note: each
        -- UTF8String MAY include an [RFC3066] language tag
@@ -212,7 +274,7 @@ type PKIHeader struct {
 	// GeneralInfo   []pkix.AttributeTypeAndValue `asn1:"explicit,optional,tag:8,omitempty"` // Not working
 }
 
-type PKIBody any
+type PKIBody asn1.RawValue
 
 type PKIProtection asn1.BitString
 
@@ -230,7 +292,7 @@ type CMPCertificate any
 
 type PKIMessage struct {
 	Header     PKIHeader
-	Body       PKIBody
+	Body       asn1.RawValue
 	Protection PKIProtection    `asn1:"optional,tag:0,omitempty, explicit"`
 	ExtraCerts []CMPCertificate `asn1:"optional,tag:1,omitempty, explicit"`
 }
