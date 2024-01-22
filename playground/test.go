@@ -5,6 +5,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"time"
 )
@@ -27,6 +28,8 @@ func main() {
 
 	recipientCommonName := "CloudPKI-Integration-Test"
 
+	sharedSecret := "SiemensIT"
+
 	randomSalt, err := RandomByte(16)
 	if err != nil {
 		fmt.Println(err)
@@ -45,6 +48,41 @@ func main() {
 		return
 	}
 
+	csr := `-----BEGIN CERTIFICATE REQUEST-----
+MIIEwDCCAqgCAQAwGzEZMBcGA1UEAxMQdGVzdC5leGFtcGxlLmNvbTCCAiIwDQYJ
+KoZIhvcNAQEBBQADggIPADCCAgoCggIBAJYtP4iLdUBt96pl3Exrz/UXzSuTsZ+i
+f7cnoFz+DyzS3+6pPLSS7o37g8xxZlqJecY6CfDeLY40maFIsHM4CgkVldwdy4F7
+SByFwVZseozGoWGOSSD2ceSMA6qgKmgSRUqwumLJdOJqc5bDQYQqPYabp66hrm9q
+VNGlC33XPJ5btITCTwWp+3LNcUYdAPDsMSY/MF8ejExITKjj8M/Xt82vSxY4VNl8
+kkSvwmOSSdfzpyl1MN9+zVslUyGJywQyV4vcLqJrM9C32nnh1SY4oE000GTGSbIa
+w5kolzrsSBVmLxuNhrgrg4IHZMaYn1OtrI3yVUXuAU0CENHfpUo20CBjTt43ReBo
+2HXPoWbxULUOqIDQQELl3ZMOxjt7owXfm5go7EsqMKbPAKtHGuFZkVe/C6JYheWQ
+nl0mGC2yfhEix3zviReTmocLLWAeTz3bVO3+jD3aKliv/RA1zyYIwWycAZuVJ17o
+e2ceBnHM0/ccO/3giERqHIn+u8hUduCRIo+S1bEB6/Mf91QYFX63uPkYzs4TW/1I
+3pklIOiYCbedVORs+U7GMcgPMOa6+oZHYsd2Q/kFly7K0RfhY/g/YTGkLW4LhXSU
+/lplOSZEasTrz5az8cdJK4JL8OAfCe6qN6gKMNNhTJC3AYVa0ATbazGvQdkEHCNn
+mFr4VRwVfV2zAgMBAAGgYDBeBgkqhkiG9w0BCQ4xUTBPMAwGA1UdEwEB/wQCMAAw
+HQYDVR0OBBYEFIa6xq2GOW+R3JVCWZMwTadF7m+2MAsGA1UdDwQEAwIDuDATBgNV
+HSUEDDAKBggrBgEFBQcDAjANBgkqhkiG9w0BAQ0FAAOCAgEAkiXuuU3/dXh3fYX2
+agt3JoJ8+GmPSVLvLbwiCkxNnJkI28gpn0BROO+QGUSHRSVaoUM1/GYb1XpXQvDd
+LIC5ZC/jlXpC5/PcnvCOQu3YJmEQeDub6YrFcFLMkf1dhOBfEywrEZwfyQ/2tNUZ
+FU9yiW0gF015651y8Xl0WMCCi8nsZ19o8MI2zzzafvpyk0M66IYq1GpRM4MzHcnf
+YzA4RygZwlrf1fiMjPrzY0oh3U53M1ejGBoAAHSqNJ0rf02FU0U+5M8SaoById8v
+ITgegC1Gsga/ox41Leiiinqudije+BX66wze/ZnjKFMfjlg2vBQChzyrTOZ07U2w
+T7v8Ey0Go0meB7sjyaKVrJiinI95Woyk/JrvUbTXW6lSVBiTkj+PKQGaGT3otIDo
+8HWI35EWs0FoKndUh3MznvsnRycf+7cPoS3prVThmA+bxS1z+pMFwYRFhl63OCQP
+kCDAJsS9LESD2wDIrv7Hmxu9SAVwqmil8KMNlwGbBj+MzE9OUUTmL7BQYujVVV8i
+MdBk6ysluKbfbolzkPKZxdZHs9YsC3szT8a7U1OY/tABBrF3D6cbEJFZgscuZFgW
+LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
+1qrQsPB5Gv8K5COmC9b7VY4czB4=
+-----END CERTIFICATE REQUEST-----
+`
+	certificateRequest, _ := pem.Decode([]byte(csr))
+	if certificateRequest == nil {
+		fmt.Println("failed to decode PEM block containing the CSR")
+		return
+	}
+
 	senderDN := Name{
 		[]pkix.AttributeTypeAndValue{
 			{Type: oidOrganization, Value: senderOrganization}},
@@ -58,8 +96,8 @@ func main() {
 	requestMessage := PKIMessage{
 		Header: PKIHeader{
 			PVNO:        CMP2000,
-			Sender:      (senderDN).GeneralName(directoryName),
-			Recipient:   (recipientDN).GeneralName(directoryName),
+			Sender:      ChoiceConvert(senderDN, directoryName),
+			Recipient:   ChoiceConvert(recipientDN, directoryName),
 			MessageTime: time.Now(),
 			ProtectionAlg: AlgorithmIdentifier{
 				Algorithm: oidPBM,
@@ -76,16 +114,18 @@ func main() {
 					},
 				},
 			},
-			SenderKID:    KeyIdentifier(senderDN.String()),
-			RecipientKID: KeyIdentifier(recipientDN.String()),
+			SenderKID:     KeyIdentifier(senderDN.String()),
+			RecipientKID:  KeyIdentifier(recipientDN.String()),
 			TransactionID: randomTransactionID,
-			SenderNonce: randomSenderNonce,
-			RecipNonce: []byte{},
+			SenderNonce:   randomSenderNonce,
+			RecipNonce:    []byte{},
 		},
-		Body:       []int{},
-		Protection: PKIProtection{},
-		ExtraCerts: []CMPCertificate{},
+		Body: asn1.RawValue{Bytes: certificateRequest.Bytes, IsCompound: true, Class: asn1.ClassContextSpecific, Tag: PKCS10CertificationRequest},
+		//Protection: asn1.BitString{},
+		//ExtraCerts: []CMPCertificate{},
 	}
+
+	requestMessage.Protect(sharedSecret)
 
 	bytes1, err1 := asn1.Marshal(requestMessage)
 	if err1 != nil {
@@ -95,5 +135,4 @@ func main() {
 
 	base64Str1 := base64.StdEncoding.EncodeToString(bytes1)
 	fmt.Println(base64Str1)
-
 }

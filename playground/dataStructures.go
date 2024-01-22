@@ -1,8 +1,14 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
+	"fmt"
+	"hash"
 	"time"
 )
 
@@ -19,14 +25,16 @@ var (
 )
 
 var (
-	oidSignatureSHA256WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11}
-	oidSignatureSHA384WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 12}
-	oidSignatureSHA512WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 13}
-	oidSignatureRSAPSS          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
-	oidSignatureDSAWithSHA256   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 2}
-	oidSignatureECDSAWithSHA256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
-	oidSignatureECDSAWithSHA384 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}
-	oidSignatureECDSAWithSHA512 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 4}
+	/*
+		oidSignatureSHA256WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11}
+		oidSignatureSHA384WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 12}
+		oidSignatureSHA512WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 13}
+		oidSignatureRSAPSS          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
+		oidSignatureDSAWithSHA256   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 2}
+		oidSignatureECDSAWithSHA256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
+		oidSignatureECDSAWithSHA384 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}
+		oidSignatureECDSAWithSHA512 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 4}
+	*/
 
 	oidHMACWithSHA256 = asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 9}
 	oidHMACWithSHA384 = asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 10}
@@ -38,6 +46,129 @@ var (
 
 	oidPBM = asn1.ObjectIdentifier{1, 2, 840, 113533, 7, 66, 13}
 )
+
+func deriveBaseKey(sharedSecret string, salt []byte, h hash.Hash, iterations int) []byte {
+	// Initial hash is the password + salt
+	h.Write([]byte(sharedSecret))
+	h.Write(salt)
+	hash := h.Sum(nil)
+
+	// Perform iterations
+	for i := 1; i < iterations; i++ {
+		h.Reset()
+		//h = sha256.New()
+		h.Write(hash)
+		hash = h.Sum(nil)
+	}
+
+	return hash
+}
+
+func OWF(s string) []byte {
+	// Replace this with your actual one-way function
+	return []byte(s)
+}
+
+func expandKey(BASEKEY []byte, K int) (key []byte) {
+	H := len(BASEKEY)
+
+	if K <= H {
+		key = BASEKEY[:K]
+	} else {
+		key = BASEKEY
+		K -= H
+
+		i := 1
+		for K > 0 {
+			h := sha256.New()
+			h.Write([]byte(fmt.Sprintf("%d", i)))
+			h.Write(BASEKEY)
+			temp := h.Sum(nil)
+
+			if K >= H {
+				key = append(key, temp...)
+				K -= H
+			} else {
+				key = append(key, temp[:K]...)
+				K = 0
+			}
+
+			i++
+		}
+	}
+
+	return key
+}
+
+func (pkiMessage *PKIMessage) Protect(sharedSecret string) (err error) {
+	pkiProtection := struct {
+		Header PKIHeader
+		Body   asn1.RawValue
+	}{Header: pkiMessage.Header,
+		Body: pkiMessage.Body}
+
+	messsageByteString, err1 := asn1.Marshal(pkiProtection)
+	if err1 != nil {
+		fmt.Println("Error marshaling structure 1:", err1)
+		return
+	}
+
+	protAlgorithm := pkiMessage.Header.ProtectionAlg
+
+	if !protAlgorithm.Algorithm.Equal(oidPBM) {
+		err = errors.New("Only PBM supported as protection Algorithm")
+		return
+	}
+
+	pbmParameter := protAlgorithm.Parameters.(PBMParameter)
+
+	var oneWayFunction hash.Hash
+
+	switch {
+	case oidSHA256.Equal(pbmParameter.OWF.Algorithm):
+		oneWayFunction = sha256.New()
+	case oidSHA384.Equal(pbmParameter.OWF.Algorithm):
+		oneWayFunction = sha512.New384()
+	case oidSHA512.Equal(pbmParameter.OWF.Algorithm):
+		oneWayFunction = sha512.New()
+	default:
+		err = errors.New("Only SHA256, SHA384 and SHA512 supported as OWF")
+		return
+	}
+
+	baseKey := deriveBaseKey(sharedSecret, pbmParameter.Salt, oneWayFunction, pbmParameter.IterationCount)
+
+	var hmacFunction hash.Hash
+
+	switch {
+	case oidHMACWithSHA256.Equal(pbmParameter.MAC.Algorithm):
+		hmacHashFunction := sha256.New()
+		key := expandKey(baseKey, hmacHashFunction.Size())
+		fmt.Println("Derived key:", key)
+		hmacFunction = hmac.New(sha256.New, key)
+	case oidHMACWithSHA384.Equal(pbmParameter.MAC.Algorithm):
+		hmacHashFunction := sha512.New384()
+		key := expandKey(baseKey, hmacHashFunction.Size())
+		fmt.Println("Derived key:", key)
+		hmacFunction = hmac.New(sha512.New384, key)
+	case oidHMACWithSHA512.Equal(pbmParameter.MAC.Algorithm):
+		hmacHashFunction := sha512.New()
+		key := expandKey(baseKey, hmacHashFunction.Size())
+		fmt.Println("Derived key:", key)
+		hmacFunction = hmac.New(sha512.New, key)
+	default:
+		err = errors.New("Only SHA256, SHA384 and SHA512 supported as HashFunction")
+		return
+	}
+
+	hmacFunction.Write([]byte(messsageByteString))
+
+	protectionByteArray := hmacFunction.Sum(nil)
+
+	pkiMessage.Protection = PKIProtection{Bytes: asn1.BitString{Bytes: protectionByteArray, BitLength: len(protectionByteArray) * 8}}
+
+	return
+}
 
 /*
    PKIBody ::= CHOICE {       -- message-specific body elements
@@ -117,36 +248,19 @@ func (name Name) String() (result string) {
 	return pkix.RDNSequence(name).String()
 }
 
-func (name Name) GeneralName(contextSpecificTag int) (generalName asn1.RawValue) {
-
-	var temp = asn1.RawValue{
-		Class:      asn1.ClassContextSpecific,
-		Tag:        contextSpecificTag,
-		IsCompound: true,
-		Bytes: func() []byte {
-			b, _ := asn1.Marshal(name)
-			return b
-		}(),
-	}
-
-	return temp
-}
-
 type IA5String string
 
-func (ia5String IA5String) GeneralName(contextSpecificTag int) (generalName asn1.RawValue) {
-
-	var temp = asn1.RawValue{
+func ChoiceConvert(source any, contextSpecificTag int) (result asn1.RawValue) {
+	result = asn1.RawValue{
 		Class:      asn1.ClassContextSpecific,
 		Tag:        contextSpecificTag,
 		IsCompound: true,
 		Bytes: func() []byte {
-			b, _ := asn1.Marshal(ia5String)
+			b, _ := asn1.Marshal(source)
 			return b
 		}(),
 	}
-
-	return temp
+	return
 }
 
 type GeneralName asn1.RawValue
@@ -276,7 +390,9 @@ type PKIHeader struct {
 
 type PKIBody asn1.RawValue
 
-type PKIProtection asn1.BitString
+//type PKIProtection asn1.BitString
+
+type PKIProtection struct{ Bytes asn1.BitString }
 
 type CMPCertificate any
 
@@ -288,11 +404,12 @@ type CMPCertificate any
          extraCerts   [1] SEQUENCE SIZE (1..MAX) OF CMPCertificate
                           OPTIONAL
 	  }
+
 */
 
 type PKIMessage struct {
 	Header     PKIHeader
 	Body       asn1.RawValue
-	Protection PKIProtection    `asn1:"optional,tag:0,omitempty, explicit"`
-	ExtraCerts []CMPCertificate `asn1:"optional,tag:1,omitempty, explicit"`
+	Protection PKIProtection    `asn1:"optional,tag:0,omitempty"`
+	ExtraCerts []CMPCertificate `asn1:"optional,tag:1,omitempty"`
 }
