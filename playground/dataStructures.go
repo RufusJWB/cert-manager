@@ -2,10 +2,13 @@ package main
 
 import (
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+
+	//"encoding/base64"
 	"errors"
 	"fmt"
 	"hash"
@@ -25,21 +28,12 @@ var (
 )
 
 var (
-	/*
-		oidSignatureSHA256WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11}
-		oidSignatureSHA384WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 12}
-		oidSignatureSHA512WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 13}
-		oidSignatureRSAPSS          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
-		oidSignatureDSAWithSHA256   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 2}
-		oidSignatureECDSAWithSHA256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
-		oidSignatureECDSAWithSHA384 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}
-		oidSignatureECDSAWithSHA512 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 4}
-	*/
-
+	oidHMACWithSHA1   = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 8, 1, 2}
 	oidHMACWithSHA256 = asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 9}
 	oidHMACWithSHA384 = asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 10}
 	oidHMACWithSHA512 = asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 11}
 
+	oidSHA1   = asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26}
 	oidSHA256 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
 	oidSHA384 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2}
 	oidSHA512 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 3}
@@ -47,29 +41,59 @@ var (
 	oidPBM = asn1.ObjectIdentifier{1, 2, 840, 113533, 7, 66, 13}
 )
 
-func deriveBaseKey(sharedSecret string, salt []byte, h hash.Hash, iterations int) []byte {
+func convertToHEXString(data []byte) (hexString string) {
+	for _, b := range data {
+		hexString += fmt.Sprintf("%02X ", b)
+	}
+	return
+}
+
+/*
+In the above protectionAlg, the salt value is appended to the shared
+secret input.  The OWF is then applied iterationCount times, where
+the salted secret is the input to the first iteration and, for each
+successive iteration, the input is set to be the output of the
+previous iteration.  The output of the final iteration (called
+"BASEKEY" for ease of reference, with a size of "H") is what is used
+to form the symmetric key.
+*/
+func deriveBaseKey(sharedSecret string, salt []byte, owf hash.Hash, iterations int) (baseKey []byte) {
 	// Initial hash is the password + salt
-	h.Write([]byte(sharedSecret))
-	h.Write(salt)
-	hash := h.Sum(nil)
+	sharedSecretByteArray := []byte(sharedSecret)
+
+	//fmt.Println("golang shared secret " + convertToHEXString(sharedSecretByteArray))
+	//fmt.Println("golang salt " + convertToHEXString(salt))
+
+	calculatingBaseKey := append(sharedSecretByteArray, salt...)
+
+	//fmt.Println("golang input baseKey " + convertToHEXString(calculatingBaseKey))
 
 	// Perform iterations
-	for i := 1; i < iterations; i++ {
-		h.Reset()
-		//h = sha256.New()
-		h.Write(hash)
-		hash = h.Sum(nil)
+	for i := 0; i < iterations; i++ {
+		owf.Reset()
+		owf.Write(calculatingBaseKey)
+		calculatingBaseKey = owf.Sum(nil)
 	}
 
-	return hash
+	//fmt.Println("golang final baseKey " + convertToHEXString(calculatingBaseKey))
+
+	baseKey = calculatingBaseKey
+
+	return
 }
 
-func OWF(s string) []byte {
-	// Replace this with your actual one-way function
-	return []byte(s)
-}
-
-func expandKey(BASEKEY []byte, K int) (key []byte) {
+/*
+If the MAC algorithm requires a K-bit key and K <= H,
+   then the most significant K bits of BASEKEY are used.  If K > H, then
+   all of BASEKEY is used for the most significant H bits of the key,
+   OWF("1" || BASEKEY) is used for the next most significant H bits of
+   the key, OWF("2" || BASEKEY) is used for the next most significant H
+   bits of the key, and so on, until all K bits have been derived.
+   [Here "N" is the ASCII byte encoding the number N and "||" represents
+   concatenation.]
+*/
+// todo: this thing is not testes
+func expandKey(BASEKEY []byte, oneWayFunction hash.Hash, K int) (key []byte) {
 	H := len(BASEKEY)
 
 	if K <= H {
@@ -80,10 +104,11 @@ func expandKey(BASEKEY []byte, K int) (key []byte) {
 
 		i := 1
 		for K > 0 {
-			h := sha256.New()
-			h.Write([]byte(fmt.Sprintf("%d", i)))
-			h.Write(BASEKEY)
-			temp := h.Sum(nil)
+			oneWayFunction.Reset()
+
+			oneWayFunction.Write([]byte(fmt.Sprintf("%d", i)))
+			oneWayFunction.Write(BASEKEY)
+			temp := oneWayFunction.Sum(nil)
 
 			if K >= H {
 				key = append(key, temp...)
@@ -109,14 +134,14 @@ func (pkiMessage *PKIMessage) Protect(sharedSecret string) (err error) {
 
 	messsageByteString, err1 := asn1.Marshal(pkiProtection)
 	if err1 != nil {
-		fmt.Println("Error marshaling structure 1:", err1)
+		err = err1
 		return
 	}
 
 	protAlgorithm := pkiMessage.Header.ProtectionAlg
 
 	if !protAlgorithm.Algorithm.Equal(oidPBM) {
-		err = errors.New("Only PBM supported as protection Algorithm")
+		err = errors.New("only PBM supported as protection Algorithm")
 		return
 	}
 
@@ -125,6 +150,8 @@ func (pkiMessage *PKIMessage) Protect(sharedSecret string) (err error) {
 	var oneWayFunction hash.Hash
 
 	switch {
+	case oidSHA1.Equal(pbmParameter.OWF.Algorithm):
+		oneWayFunction = sha1.New()
 	case oidSHA256.Equal(pbmParameter.OWF.Algorithm):
 		oneWayFunction = sha256.New()
 	case oidSHA384.Equal(pbmParameter.OWF.Algorithm):
@@ -132,7 +159,7 @@ func (pkiMessage *PKIMessage) Protect(sharedSecret string) (err error) {
 	case oidSHA512.Equal(pbmParameter.OWF.Algorithm):
 		oneWayFunction = sha512.New()
 	default:
-		err = errors.New("Only SHA256, SHA384 and SHA512 supported as OWF")
+		err = errors.New("only SHA1, SHA256, SHA384 and SHA512 supported as OWF")
 		return
 	}
 
@@ -141,28 +168,36 @@ func (pkiMessage *PKIMessage) Protect(sharedSecret string) (err error) {
 	var hmacFunction hash.Hash
 
 	switch {
+	case oidHMACWithSHA1.Equal(pbmParameter.MAC.Algorithm):
+		//hmacHashFunction := sha1.New()
+		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
+		key := baseKey
+		//fmt.Println("golang derived key:", convertToHEXString(key))
+		hmacFunction = hmac.New(sha1.New, key)
 	case oidHMACWithSHA256.Equal(pbmParameter.MAC.Algorithm):
-		hmacHashFunction := sha256.New()
-		key := expandKey(baseKey, hmacHashFunction.Size())
-		fmt.Println("Derived key:", key)
+		//hmacHashFunction := sha256.New()
+		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
+		key := baseKey
+		//fmt.Println("golang derived key:", convertToHEXString(key))
 		hmacFunction = hmac.New(sha256.New, key)
 	case oidHMACWithSHA384.Equal(pbmParameter.MAC.Algorithm):
-		hmacHashFunction := sha512.New384()
-		key := expandKey(baseKey, hmacHashFunction.Size())
-		fmt.Println("Derived key:", key)
+		//hmacHashFunction := sha512.New384()
+		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
+		key := baseKey
+		//fmt.Println("golang derived key:", convertToHEXString(key))
 		hmacFunction = hmac.New(sha512.New384, key)
 	case oidHMACWithSHA512.Equal(pbmParameter.MAC.Algorithm):
-		hmacHashFunction := sha512.New()
-		key := expandKey(baseKey, hmacHashFunction.Size())
-		fmt.Println("Derived key:", key)
+		//hmacHashFunction := sha512.New()
+		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
+		key := baseKey
+		//fmt.Println("golang derived key:", convertToHEXString(key))
 		hmacFunction = hmac.New(sha512.New, key)
 	default:
-		err = errors.New("Only SHA256, SHA384 and SHA512 supported as HashFunction")
+		err = errors.New("only SHA1, SHA256, SHA384 and SHA512 supported as HashFunction")
 		return
 	}
 
-	hmacFunction.Write([]byte(messsageByteString))
-
+	hmacFunction.Write(messsageByteString)
 	protectionByteArray := hmacFunction.Sum(nil)
 
 	pkiMessage.Protection = PKIProtection{Bytes: asn1.BitString{Bytes: protectionByteArray, BitLength: len(protectionByteArray) * 8}}
@@ -233,13 +268,13 @@ const (
 )
 
 /*
-   PKIFreeText ::= SEQUENCE SIZE (1..MAX) OF UTF8String
-       -- text encoded as UTF-8 String [RFC3629] (note: each
-       -- UTF8String MAY include an [RFC3066] language tag
-       -- to indicate the language of the contained text
-       -- see [RFC2482] for details)
-*/
+PKIFreeText ::= SEQUENCE SIZE (1..MAX) OF UTF8String
 
+	-- text encoded as UTF-8 String [RFC3629] (note: each
+	-- UTF8String MAY include an [RFC3066] language tag
+	-- to indicate the language of the contained text
+	-- see [RFC2482] for details)
+*/
 type PKIFreeText []string
 
 type Name pkix.RDNSequence
@@ -266,18 +301,17 @@ func ChoiceConvert(source any, contextSpecificTag int) (result asn1.RawValue) {
 type GeneralName asn1.RawValue
 
 /*
-GeneralName ::= CHOICE {
-	otherName                       [0]     AnotherName,
-	rfc822Name                      [1]     IA5String,
-	dNSName                         [2]     IA5String,
-	x400Address                     [3]     ORAddress,
-	directoryName                   [4]     Name,
-	ediPartyName                    [5]     EDIPartyName,
-	uniformResourceIdentifier       [6]     IA5String,
-	iPAddress                       [7]     OCTET STRING,
-	registeredID                    [8]     OBJECT IDENTIFIER }
+	GeneralName ::= CHOICE {
+		otherName                       [0]     AnotherName,
+		rfc822Name                      [1]     IA5String,
+		dNSName                         [2]     IA5String,
+		x400Address                     [3]     ORAddress,
+		directoryName                   [4]     Name,
+		ediPartyName                    [5]     EDIPartyName,
+		uniformResourceIdentifier       [6]     IA5String,
+		iPAddress                       [7]     OCTET STRING,
+		registeredID                    [8]     OBJECT IDENTIFIER }
 */
-
 const (
 	otherName = iota
 	rfc822Name
@@ -293,23 +327,22 @@ const (
 type KeyIdentifier []byte
 
 /*
-   PBMParameter ::= SEQUENCE {
-       salt                OCTET STRING,
-       -- note:  implementations MAY wish to limit acceptable sizes
-       -- of this string to values appropriate for their environment
-       -- in order to reduce the risk of denial-of-service attacks
-       owf                 AlgorithmIdentifier,
-       -- AlgId for a One-Way Function (SHA-1 recommended)
-       iterationCount      INTEGER,
-       -- number of times the OWF is applied
-       -- note:  implementations MAY wish to limit acceptable sizes
-       -- of this integer to values appropriate for their environment
-       -- in order to reduce the risk of denial-of-service attacks
-       mac                 AlgorithmIdentifier
-       -- the MAC AlgId (e.g., DES-MAC, Triple-DES-MAC [PKCS11],
-   }   -- or HMAC [RFC2104, RFC2202])
+	PBMParameter ::= SEQUENCE {
+	    salt                OCTET STRING,
+	    -- note:  implementations MAY wish to limit acceptable sizes
+	    -- of this string to values appropriate for their environment
+	    -- in order to reduce the risk of denial-of-service attacks
+	    owf                 AlgorithmIdentifier,
+	    -- AlgId for a One-Way Function (SHA-1 recommended)
+	    iterationCount      INTEGER,
+	    -- number of times the OWF is applied
+	    -- note:  implementations MAY wish to limit acceptable sizes
+	    -- of this integer to values appropriate for their environment
+	    -- in order to reduce the risk of denial-of-service attacks
+	    mac                 AlgorithmIdentifier
+	    -- the MAC AlgId (e.g., DES-MAC, Triple-DES-MAC [PKCS11],
+	}   -- or HMAC [RFC2104, RFC2202])
 */
-
 type PBMParameter struct {
 	Salt           []byte
 	OWF            AlgorithmIdentifier
@@ -332,7 +365,7 @@ type AlgorithmIdentifier struct {
 }
 
 const (
-	CMP1999 = iota
+	CMP1999 = iota + 1
 	CMP2000
 	CMP2021
 )

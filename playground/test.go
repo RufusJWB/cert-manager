@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 )
 
@@ -23,7 +26,6 @@ func RandomByte(n int) ([]byte, error) {
 
 func main() {
 
-	senderOrganization := "Siemens"
 	senderCommonName := "CloudCA-Integration-Test-User"
 
 	recipientCommonName := "CloudPKI-Integration-Test"
@@ -85,8 +87,6 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 
 	senderDN := Name{
 		[]pkix.AttributeTypeAndValue{
-			{Type: oidOrganization, Value: senderOrganization}},
-		[]pkix.AttributeTypeAndValue{
 			{Type: oidCommonName, Value: senderCommonName}}}
 
 	recipientDN := Name{
@@ -107,7 +107,7 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 						Algorithm:  oidSHA512,
 						Parameters: []byte{},
 					},
-					IterationCount: 1024, // Increase significantly for production!!!
+					IterationCount: 262144,
 					MAC: AlgorithmIdentifier{
 						Algorithm:  oidHMACWithSHA512,
 						Parameters: []byte{},
@@ -121,8 +121,6 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 			RecipNonce:    []byte{},
 		},
 		Body: asn1.RawValue{Bytes: certificateRequest.Bytes, IsCompound: true, Class: asn1.ClassContextSpecific, Tag: PKCS10CertificationRequest},
-		//Protection: asn1.BitString{},
-		//ExtraCerts: []CMPCertificate{},
 	}
 
 	requestMessage.Protect(sharedSecret)
@@ -135,4 +133,24 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 
 	base64Str1 := base64.StdEncoding.EncodeToString(bytes1)
 	fmt.Println(base64Str1)
+
+	url := "https://broker.sdo-qa.siemens.cloud/.well-known/cmp" // Replace with your URL
+
+	resp, err := http.Post(url, "application/pkixcmp", bytes.NewReader(bytes1))
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error reading response body:", err)
+		return
+	}
+
+	fmt.Println("Response status:", resp.Status)
+	fmt.Println("Response body:", base64.URLEncoding.EncodeToString(body))
+
+	// todo: parse, validate and send certconf message
 }
