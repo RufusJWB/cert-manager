@@ -32,6 +32,8 @@ func main() {
 
 	sharedSecret := "SiemensIT"
 
+	url := "https://broker.sdo-qa.siemens.cloud/.well-known/cmp"
+
 	randomSalt, err := RandomByte(16)
 	if err != nil {
 		fmt.Println(err)
@@ -134,7 +136,7 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 	base64Str1 := base64.StdEncoding.EncodeToString(bytes1)
 	fmt.Println(base64Str1)
 
-	url := "https://broker.sdo-qa.siemens.cloud/.well-known/cmp" // Replace with your URL
+	 // Replace with your URL
 
 	resp, err := http.Post(url, "application/pkixcmp", bytes.NewReader(bytes1))
 	if err != nil {
@@ -152,8 +154,10 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 	fmt.Println("Response status:", resp.Status)
 	fmt.Println("Response body:", base64.URLEncoding.EncodeToString(body))
 
-	responseMessage := PKIMessage{}
-	rest, err := asn1.Unmarshal(body, responseMessage)
+
+	var responseMessage PKIMessage
+	rest, err := asn1.Unmarshal(body, &responseMessage)
 	_ = rest
+	_ = err
 	// todo: parse, validate and send certconf message
 }
