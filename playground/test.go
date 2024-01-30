@@ -13,44 +13,32 @@ import (
 	"time"
 )
 
-func RandomByte(n int) ([]byte, error) {
-	b := make([]byte, n)
-	_, err := rand.Read(b)
-	// Note that err == nil only if we read len(b) bytes.
-	if err != nil {
-		return nil, err
-	}
-
-	return b, nil
-}
-
 func main() {
 
 	senderCommonName := "CloudCA-Integration-Test-User"
+	_ = senderCommonName
 
 	recipientCommonName := "CloudPKI-Integration-Test"
+	_ = recipientCommonName
 
 	sharedSecret := "SiemensIT"
+	_ = sharedSecret
 
 	url := "https://broker.sdo-qa.siemens.cloud/.well-known/cmp"
 
-	randomSalt, err := RandomByte(16)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	randomSalt, _ := createRandom(16)
+	_ = randomSalt
 
-	randomTransactionID, err := RandomByte(16)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	randomTransactionID, _ := createRandom(16)
+	_ = randomTransactionID
 
-	randomSenderNonce, err := RandomByte(16)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	randomSenderNonce, _ := createRandom(16)
+	_ = randomSenderNonce
+	//fmt.Println("random SenderNonce: " + base64.StdEncoding.EncodeToString(randomSenderNonce))
+
+	randomRecipNonce, _ := createRandom(16)
+	_ = randomRecipNonce
+	//fmt.Println("random RecipNonce: " + base64.StdEncoding.EncodeToString(randomRecipNonce))
 
 	csr := `-----BEGIN CERTIFICATE REQUEST-----
 MIIEwDCCAqgCAQAwGzEZMBcGA1UEAxMQdGVzdC5leGFtcGxlLmNvbTCCAiIwDQYJ
@@ -120,30 +108,32 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 			RecipientKID:  KeyIdentifier(recipientDN.String()),
 			TransactionID: randomTransactionID,
 			SenderNonce:   randomSenderNonce,
-			RecipNonce:    []byte{},
+			RecipNonce:    randomRecipNonce,
 		},
 		Body: asn1.RawValue{Bytes: certificateRequest.Bytes, IsCompound: true, Class: asn1.ClassContextSpecific, Tag: PKCS10CertificationRequest},
 	}
 
 	requestMessage.Protect(sharedSecret)
 
-	bytes1, err1 := asn1.Marshal(requestMessage)
+	pkiMessageAsDER, err1 := asn1.Marshal(requestMessage)
 	if err1 != nil {
 		fmt.Println("Error marshaling structure 1:", err1)
 		return
 	}
 
-	base64Str1 := base64.StdEncoding.EncodeToString(bytes1)
-	fmt.Println(base64Str1)
+	//fmt.Println(base64.StdEncoding.EncodeToString(pkiMessageAsDER))
 
-	 // Replace with your URL
+	client := &http.Client{}
 
-	resp, err := http.Post(url, "application/pkixcmp", bytes.NewReader(bytes1))
+	resp, err := client.Post(url, "application/pkixcmp", bytes.NewReader(pkiMessageAsDER))
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
 	}
 	defer resp.Body.Close()
+
+	/*fmt.Println("random SenderNonce: " + base64.StdEncoding.EncodeToString(randomSenderNonce))
+	fmt.Println("random RecipNonce: " + base64.StdEncoding.EncodeToString(randomRecipNonce))*/
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -152,12 +142,40 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 	}
 
 	fmt.Println("Response status:", resp.Status)
-	fmt.Println("Response body:", base64.URLEncoding.EncodeToString(body))
-
+	//	fmt.Println("Response body:", base64.URLEncoding.EncodeToString(body))
 
 	var responseMessage PKIMessage
 	rest, err := asn1.Unmarshal(body, &responseMessage)
+
+	responseSenderNonce := responseMessage.Header.SenderNonce
+	responseRecipientNonce := responseMessage.Header.RecipNonce
+
+	fmt.Println("response SenderNonce: " + base64.StdEncoding.EncodeToString(responseSenderNonce))
+	fmt.Println("response RecipNonce: " + base64.StdEncoding.EncodeToString(responseRecipientNonce))
+
+	if bytes.Equal(randomSenderNonce, responseRecipientNonce) {
+		fmt.Println("Nonce is equale")
+	} else {
+		fmt.Println("Nonce not is equale")
+	}
+
+	_ = responseRecipientNonce
+	_ = responseSenderNonce
 	_ = rest
 	_ = err
+
 	// todo: parse, validate and send certconf message
+}
+
+func createRandom(n int) (randomValue []byte, err error) {
+	randomValue = make([]byte, n)
+	nRead, err := rand.Read(randomValue)
+
+	if err != nil {
+		fmt.Errorf("Read err %v", err)
+	}
+	if nRead != n {
+		fmt.Errorf("Read returned unexpected n; %d != %d", nRead, n)
+	}
+	return
 }
