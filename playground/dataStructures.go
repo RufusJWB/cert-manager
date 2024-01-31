@@ -7,13 +7,65 @@ import (
 	"crypto/sha512"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-
-	//"encoding/base64"
 	"errors"
-	"fmt"
 	"hash"
 	"time"
 )
+
+/*
+	CertRepMessage ::= SEQUENCE {
+	    caPubs          [1] SEQUENCE SIZE (1..MAX) OF Certificate
+	                        OPTIONAL,
+	    response            SEQUENCE OF CertResponse
+	}
+*/
+type CertRepMessage struct {
+	CAPubs   []asn1.RawValue `asn1:"optional,tag:1,omitempty"`
+	Response []CertResponse
+}
+
+/*
+	CertResponse ::= SEQUENCE {
+	    certReqId           INTEGER,
+	    status              PKIStatusInfo,
+	    certifiedKeyPair    CertifiedKeyPair    OPTIONAL,
+	    rspInfo             OCTET STRING        OPTIONAL
+	    -- analogous to the id-regInfo-utf8Pairs string defined
+	    -- for regInfo in CertReqMsg [CRMF]
+	}
+*/
+type CertResponse struct {
+	CertReqID        int
+	Status           asn1.RawValue
+	CertifiedKeyPair CertifiedKeyPair `asn1:"optional,omitempty"`
+	RSPInfo          []byte           `asn1:"optional,omitempty"`
+}
+
+/*
+	CertifiedKeyPair ::= SEQUENCE {
+	    certOrEncCert       CertOrEncCert,
+	    privateKey      [0] EncryptedValue      OPTIONAL,
+	    -- see [CRMF] for comment on encoding
+	    publicationInfo [1] PKIPublicationInfo  OPTIONAL
+	}
+*/
+type CertifiedKeyPair struct {
+	CertOrEncCert   asn1.RawValue
+	PrivateKey      asn1.RawValue `asn1:"optional,omitempty"`
+	PublicationInfo asn1.RawValue `asn1:"optional,omitempty"`
+}
+
+const (
+	Certificate = iota
+	EncryptedValue
+)
+
+/*
+   CertOrEncCert ::= CHOICE {
+       certificate     [0] Certificate,
+       encryptedCert   [1] EncryptedValue
+   }
+*/
 
 var (
 	oidCountry            = asn1.ObjectIdentifier{2, 5, 4, 6}
@@ -41,13 +93,6 @@ var (
 	oidPBM = asn1.ObjectIdentifier{1, 2, 840, 113533, 7, 66, 13}
 )
 
-func convertToHEXString(data []byte) (hexString string) {
-	for _, b := range data {
-		hexString += fmt.Sprintf("%02X ", b)
-	}
-	return
-}
-
 /*
 In the above protectionAlg, the salt value is appended to the shared
 secret input.  The OWF is then applied iterationCount times, where
@@ -60,69 +105,17 @@ to form the symmetric key.
 func deriveBaseKey(sharedSecret string, salt []byte, owf hash.Hash, iterations int) (baseKey []byte) {
 	// Initial hash is the password + salt
 	sharedSecretByteArray := []byte(sharedSecret)
-
-	//fmt.Println("golang shared secret " + convertToHEXString(sharedSecretByteArray))
-	//fmt.Println("golang salt " + convertToHEXString(salt))
-
 	calculatingBaseKey := append(sharedSecretByteArray, salt...)
 
-	//fmt.Println("golang input baseKey " + convertToHEXString(calculatingBaseKey))
-
-	// Perform iterations
 	for i := 0; i < iterations; i++ {
 		owf.Reset()
 		owf.Write(calculatingBaseKey)
 		calculatingBaseKey = owf.Sum(nil)
 	}
 
-	//fmt.Println("golang final baseKey " + convertToHEXString(calculatingBaseKey))
-
 	baseKey = calculatingBaseKey
 
 	return
-}
-
-/*
-If the MAC algorithm requires a K-bit key and K <= H,
-   then the most significant K bits of BASEKEY are used.  If K > H, then
-   all of BASEKEY is used for the most significant H bits of the key,
-   OWF("1" || BASEKEY) is used for the next most significant H bits of
-   the key, OWF("2" || BASEKEY) is used for the next most significant H
-   bits of the key, and so on, until all K bits have been derived.
-   [Here "N" is the ASCII byte encoding the number N and "||" represents
-   concatenation.]
-*/
-// todo: this thing is not testes
-func expandKey(BASEKEY []byte, oneWayFunction hash.Hash, K int) (key []byte) {
-	H := len(BASEKEY)
-
-	if K <= H {
-		key = BASEKEY[:K]
-	} else {
-		key = BASEKEY
-		K -= H
-
-		i := 1
-		for K > 0 {
-			oneWayFunction.Reset()
-
-			oneWayFunction.Write([]byte(fmt.Sprintf("%d", i)))
-			oneWayFunction.Write(BASEKEY)
-			temp := oneWayFunction.Sum(nil)
-
-			if K >= H {
-				key = append(key, temp...)
-				K -= H
-			} else {
-				key = append(key, temp[:K]...)
-				K = 0
-			}
-
-			i++
-		}
-	}
-
-	return key
 }
 
 func (pkiMessage *PKIMessage) Protect(sharedSecret string) (err error) {
@@ -169,29 +162,13 @@ func (pkiMessage *PKIMessage) Protect(sharedSecret string) (err error) {
 
 	switch {
 	case oidHMACWithSHA1.Equal(pbmParameter.MAC.Algorithm):
-		//hmacHashFunction := sha1.New()
-		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
-		key := baseKey
-		//fmt.Println("golang derived key:", convertToHEXString(key))
-		hmacFunction = hmac.New(sha1.New, key)
+		hmacFunction = hmac.New(sha1.New, baseKey)
 	case oidHMACWithSHA256.Equal(pbmParameter.MAC.Algorithm):
-		//hmacHashFunction := sha256.New()
-		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
-		key := baseKey
-		//fmt.Println("golang derived key:", convertToHEXString(key))
-		hmacFunction = hmac.New(sha256.New, key)
+		hmacFunction = hmac.New(sha256.New, baseKey)
 	case oidHMACWithSHA384.Equal(pbmParameter.MAC.Algorithm):
-		//hmacHashFunction := sha512.New384()
-		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
-		key := baseKey
-		//fmt.Println("golang derived key:", convertToHEXString(key))
-		hmacFunction = hmac.New(sha512.New384, key)
+		hmacFunction = hmac.New(sha512.New384, baseKey)
 	case oidHMACWithSHA512.Equal(pbmParameter.MAC.Algorithm):
-		//hmacHashFunction := sha512.New()
-		//key := expandKey(baseKey, oneWayFunction, hmacHashFunction.Size())
-		key := baseKey
-		//fmt.Println("golang derived key:", convertToHEXString(key))
-		hmacFunction = hmac.New(sha512.New, key)
+		hmacFunction = hmac.New(sha512.New, baseKey)
 	default:
 		err = errors.New("only SHA1, SHA256, SHA384 and SHA512 supported as HashFunction")
 		return
@@ -423,8 +400,6 @@ type PKIHeader struct {
 
 type PKIBody asn1.RawValue
 
-//type PKIProtection asn1.BitString
-
 type PKIProtection struct{ Bytes asn1.BitString }
 
 type CMPCertificate any
@@ -437,7 +412,6 @@ type CMPCertificate any
          extraCerts   [1] SEQUENCE SIZE (1..MAX) OF CMPCertificate
                           OPTIONAL
 	  }
-
 */
 
 type PKIMessage struct {

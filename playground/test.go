@@ -3,13 +3,16 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	x509 "crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"reflect"
 	"time"
 )
 
@@ -34,11 +37,13 @@ func main() {
 
 	randomSenderNonce, _ := createRandom(16)
 	_ = randomSenderNonce
-	//fmt.Println("random SenderNonce: " + base64.StdEncoding.EncodeToString(randomSenderNonce))
 
 	randomRecipNonce, _ := createRandom(16)
 	_ = randomRecipNonce
-	//fmt.Println("random RecipNonce: " + base64.StdEncoding.EncodeToString(randomRecipNonce))
+
+	fmt.Println("Request SenderNonce: " + base64.StdEncoding.EncodeToString(randomSenderNonce))
+	fmt.Println("Request RecipNonce: " + base64.StdEncoding.EncodeToString(randomRecipNonce))
+	fmt.Println("Request TransactionID: " + base64.StdEncoding.EncodeToString(randomTransactionID))
 
 	csr := `-----BEGIN CERTIFICATE REQUEST-----
 MIIEwDCCAqgCAQAwGzEZMBcGA1UEAxMQdGVzdC5leGFtcGxlLmNvbTCCAiIwDQYJ
@@ -75,6 +80,14 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 		return
 	}
 
+	csrBytes := certificateRequest.Bytes
+
+	parsedCSR, _ := x509.ParseCertificateRequest(csrBytes)
+
+	csrPublicKey := parsedCSR.PublicKey
+
+	_ = csrPublicKey
+
 	senderDN := Name{
 		[]pkix.AttributeTypeAndValue{
 			{Type: oidCommonName, Value: senderCommonName}}}
@@ -83,7 +96,7 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 		[]pkix.AttributeTypeAndValue{
 			{Type: oidCommonName, Value: recipientCommonName}}}
 
-	requestMessage := PKIMessage{
+	p10RequestMessage := PKIMessage{
 		Header: PKIHeader{
 			PVNO:        CMP2000,
 			Sender:      ChoiceConvert(senderDN, directoryName),
@@ -113,58 +126,130 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 		Body: asn1.RawValue{Bytes: certificateRequest.Bytes, IsCompound: true, Class: asn1.ClassContextSpecific, Tag: PKCS10CertificationRequest},
 	}
 
+	responseBody := sendCMPMessage(p10RequestMessage, sharedSecret, url)
+
+	var responseMessage PKIMessage
+	asn1.Unmarshal(responseBody, &responseMessage)
+
+	responseSenderNonce := responseMessage.Header.SenderNonce
+	responseRecipientNonce := responseMessage.Header.RecipNonce
+	responseTransactionID := responseMessage.Header.TransactionID
+
+	fmt.Println("Response SenderNonce: " + base64.StdEncoding.EncodeToString(responseSenderNonce))
+	fmt.Println("Response RecipNonce: " + base64.StdEncoding.EncodeToString(responseRecipientNonce))
+	fmt.Println("Response TransactionID: " + base64.StdEncoding.EncodeToString(responseTransactionID))
+
+	if bytes.Equal(responseTransactionID, randomTransactionID) {
+		fmt.Println("TransactionID is equale")
+	} else {
+		log.Fatal("TransactionID is not equale")
+	}
+
+	if bytes.Equal(randomSenderNonce, responseRecipientNonce) {
+		fmt.Println("Nonce is equale")
+	} else {
+		log.Fatal("Nonce is not equale")
+	}
+
+	if responseMessage.Body.Tag != CertificationResponse {
+		log.Fatalf("Response message of type %v", responseMessage.Body.Tag)
+	}
+
+	var certRepMessage CertRepMessage
+	asn1.Unmarshal(responseMessage.Body.Bytes, &certRepMessage)
+
+	if len(certRepMessage.Response) != 1 {
+		log.Fatalf("Response contained %v certificates", len(certRepMessage.Response))
+	}
+
+	if certRepMessage.Response[0].CertifiedKeyPair.CertOrEncCert.Tag != Certificate {
+		log.Fatalf("Response certificate of type %v", certRepMessage.Response[0].CertifiedKeyPair.CertOrEncCert.Tag)
+	}
+
+	certificate, _ := x509.ParseCertificate(certRepMessage.Response[0].CertifiedKeyPair.CertOrEncCert.Bytes)
+
+	fmt.Printf("Certificate issued to %v\n", certificate.Subject)
+	fmt.Printf("Certificate issued by %v\n", certificate.Issuer)
+	fmt.Printf("Certificate valid from %v\n", certificate.NotBefore)
+	fmt.Printf("Certificate valid until %v\n", certificate.NotAfter)
+
+	certificatePublicKey := certificate.PublicKey
+
+	if !reflect.DeepEqual(csrPublicKey, certificatePublicKey) {
+		log.Fatalf("Certificate doesn't match to key provided in CSR")
+	}
+
+
+	certConfMessage := PKIMessage{
+		Header: PKIHeader{
+			PVNO:        CMP2000,
+			Sender:      ChoiceConvert(senderDN, directoryName),
+			Recipient:   ChoiceConvert(recipientDN, directoryName),
+			MessageTime: time.Now(),
+			ProtectionAlg: AlgorithmIdentifier{
+				Algorithm: oidPBM,
+				Parameters: PBMParameter{
+					Salt: randomSalt,
+					OWF: AlgorithmIdentifier{
+						Algorithm:  oidSHA512,
+						Parameters: []byte{},
+					},
+					IterationCount: 262144,
+					MAC: AlgorithmIdentifier{
+						Algorithm:  oidHMACWithSHA512,
+						Parameters: []byte{},
+					},
+				},
+			},
+			SenderKID:     KeyIdentifier(senderDN.String()),
+			RecipientKID:  KeyIdentifier(recipientDN.String()),
+			TransactionID: randomTransactionID,
+			SenderNonce:   randomSenderNonce,
+			RecipNonce:    randomRecipNonce,
+		},
+		//Body: asn1.RawValue{Bytes: certificateRequest.Bytes, IsCompound: true, Class: asn1.ClassContextSpecific, Tag: PKCS10CertificationRequest},
+	}
+
+	certConfResponseBody := sendCMPMessage(certConfMessage, sharedSecret, url)
+
+	var certConfResponseMessage PKIMessage
+	asn1.Unmarshal(certConfResponseBody, &certConfResponseMessage)
+
+
+	_ = certificatePublicKey
+
+	_ = certificate
+
+}
+
+func sendCMPMessage(requestMessage PKIMessage, sharedSecret string, url string) (body []byte) {
 	requestMessage.Protect(sharedSecret)
 
 	pkiMessageAsDER, err1 := asn1.Marshal(requestMessage)
 	if err1 != nil {
-		fmt.Println("Error marshaling structure 1:", err1)
-		return
+		log.Fatalf("Error marshaling structure 1:", err1)
 	}
 
-	//fmt.Println(base64.StdEncoding.EncodeToString(pkiMessageAsDER))
+	fmt.Println(base64.StdEncoding.EncodeToString(pkiMessageAsDER))
 
 	client := &http.Client{}
 
 	resp, err := client.Post(url, "application/pkixcmp", bytes.NewReader(pkiMessageAsDER))
 	if err != nil {
-		fmt.Println("Error:", err)
-		return
+		log.Fatalf("Error:", err)
 	}
 	defer resp.Body.Close()
 
-	/*fmt.Println("random SenderNonce: " + base64.StdEncoding.EncodeToString(randomSenderNonce))
-	fmt.Println("random RecipNonce: " + base64.StdEncoding.EncodeToString(randomRecipNonce))*/
+	if resp.StatusCode != 200 {
+		log.Fatalf("Status code %v doesn't equal 200", resp.Status)
+	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println("Error reading response body:", err)
-		return
+		log.Fatalf("Error reading response body:", err)
 	}
 
-	fmt.Println("Response status:", resp.Status)
-	//	fmt.Println("Response body:", base64.URLEncoding.EncodeToString(body))
-
-	var responseMessage PKIMessage
-	rest, err := asn1.Unmarshal(body, &responseMessage)
-
-	responseSenderNonce := responseMessage.Header.SenderNonce
-	responseRecipientNonce := responseMessage.Header.RecipNonce
-
-	fmt.Println("response SenderNonce: " + base64.StdEncoding.EncodeToString(responseSenderNonce))
-	fmt.Println("response RecipNonce: " + base64.StdEncoding.EncodeToString(responseRecipientNonce))
-
-	if bytes.Equal(randomSenderNonce, responseRecipientNonce) {
-		fmt.Println("Nonce is equale")
-	} else {
-		fmt.Println("Nonce not is equale")
-	}
-
-	_ = responseRecipientNonce
-	_ = responseSenderNonce
-	_ = rest
-	_ = err
-
-	// todo: parse, validate and send certconf message
+	return
 }
 
 func createRandom(n int) (randomValue []byte, err error) {
