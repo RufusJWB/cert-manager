@@ -2,48 +2,40 @@ package main
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/rand"
 	x509 "crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"time"
 )
 
 func main() {
-
 	senderCommonName := "CloudCA-Integration-Test-User"
-	_ = senderCommonName
+	senderDN := Name{
+		[]pkix.AttributeTypeAndValue{
+			{Type: oidCommonName, Value: senderCommonName}}}
 
 	recipientCommonName := "CloudPKI-Integration-Test"
-	_ = recipientCommonName
+	recipientDN := Name{
+		[]pkix.AttributeTypeAndValue{
+			{Type: oidCommonName, Value: recipientCommonName}}}
 
 	sharedSecret := "SiemensIT"
-	_ = sharedSecret
 
 	url := "https://broker.sdo-qa.siemens.cloud/.well-known/cmp"
 
-	randomSalt, _ := createRandom(16)
-	_ = randomSalt
+	randomTransactionID := createRandom(16)
 
-	randomTransactionID, _ := createRandom(16)
-	_ = randomTransactionID
-
-	randomSenderNonce, _ := createRandom(16)
-	_ = randomSenderNonce
-
-	randomRecipNonce, _ := createRandom(16)
-	_ = randomRecipNonce
-
-	fmt.Println("Request SenderNonce: " + base64.StdEncoding.EncodeToString(randomSenderNonce))
-	fmt.Println("Request RecipNonce: " + base64.StdEncoding.EncodeToString(randomRecipNonce))
-	fmt.Println("Request TransactionID: " + base64.StdEncoding.EncodeToString(randomTransactionID))
+	randomSenderNonce := createRandom(16)
+	randomRecipNonce := createRandom(16)
 
 	csr := `-----BEGIN CERTIFICATE REQUEST-----
 MIIEwDCCAqgCAQAwGzEZMBcGA1UEAxMQdGVzdC5leGFtcGxlLmNvbTCCAiIwDQYJ
@@ -76,25 +68,12 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 `
 	certificateRequest, _ := pem.Decode([]byte(csr))
 	if certificateRequest == nil {
-		fmt.Println("failed to decode PEM block containing the CSR")
-		return
+		log.Fatal("failed to decode PEM block containing the CSR")
 	}
-
-	csrBytes := certificateRequest.Bytes
-
-	parsedCSR, _ := x509.ParseCertificateRequest(csrBytes)
-
+	parsedCSR, _ := x509.ParseCertificateRequest(certificateRequest.Bytes)
 	csrPublicKey := parsedCSR.PublicKey
 
-	_ = csrPublicKey
-
-	senderDN := Name{
-		[]pkix.AttributeTypeAndValue{
-			{Type: oidCommonName, Value: senderCommonName}}}
-
-	recipientDN := Name{
-		[]pkix.AttributeTypeAndValue{
-			{Type: oidCommonName, Value: recipientCommonName}}}
+	randomSalt := createRandom(16)
 
 	p10RequestMessage := PKIMessage{
 		Header: PKIHeader{
@@ -131,23 +110,11 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 	var responseMessage PKIMessage
 	asn1.Unmarshal(responseBody, &responseMessage)
 
-	responseSenderNonce := responseMessage.Header.SenderNonce
-	responseRecipientNonce := responseMessage.Header.RecipNonce
-	responseTransactionID := responseMessage.Header.TransactionID
-
-	fmt.Println("Response SenderNonce: " + base64.StdEncoding.EncodeToString(responseSenderNonce))
-	fmt.Println("Response RecipNonce: " + base64.StdEncoding.EncodeToString(responseRecipientNonce))
-	fmt.Println("Response TransactionID: " + base64.StdEncoding.EncodeToString(responseTransactionID))
-
-	if bytes.Equal(responseTransactionID, randomTransactionID) {
-		fmt.Println("TransactionID is equale")
-	} else {
+	if !bytes.Equal(responseMessage.Header.TransactionID, randomTransactionID) {
 		log.Fatal("TransactionID is not equale")
 	}
 
-	if bytes.Equal(randomSenderNonce, responseRecipientNonce) {
-		fmt.Println("Nonce is equale")
-	} else {
+	if !bytes.Equal(randomSenderNonce, responseMessage.Header.RecipNonce) {
 		log.Fatal("Nonce is not equale")
 	}
 
@@ -173,12 +140,40 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 	fmt.Printf("Certificate valid from %v\n", certificate.NotBefore)
 	fmt.Printf("Certificate valid until %v\n", certificate.NotAfter)
 
-	certificatePublicKey := certificate.PublicKey
+	block := &pem.Block{
+		Type: "CERTIFICATE",
+		Headers: nil,
+		Bytes: certificate.Raw,
+	}
+	pem.Encode(os.Stdout, block)
 
-	if !reflect.DeepEqual(csrPublicKey, certificatePublicKey) {
+	if !reflect.DeepEqual(csrPublicKey, certificate.PublicKey) {
 		log.Fatalf("Certificate doesn't match to key provided in CSR")
 	}
 
+	/*
+	   certHash    OCTET STRING,
+	   -- the hash of the certificate, using the same hash algorithm
+	   -- as is used to create and verify the certificate signature
+	*/
+	signAlgorithm := certificate.SignatureAlgorithm
+
+	var hashType crypto.Hash
+
+	for _, details := range signatureAlgorithmDetails {
+		if details.algo == signAlgorithm {
+			hashType = details.hash
+		}
+	}
+
+	hashFunc := hashType.New()
+
+	hashFunc.Reset()
+	hashFunc.Write(certificate.Raw)
+	certHash := hashFunc.Sum(nil)
+
+	randomSenderNonce = createRandom(16)
+	randomSalt = createRandom(16)
 
 	certConfMessage := PKIMessage{
 		Header: PKIHeader{
@@ -205,9 +200,14 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 			RecipientKID:  KeyIdentifier(recipientDN.String()),
 			TransactionID: randomTransactionID,
 			SenderNonce:   randomSenderNonce,
-			RecipNonce:    randomRecipNonce,
+			RecipNonce:    responseMessage.Header.SenderNonce,
 		},
-		//Body: asn1.RawValue{Bytes: certificateRequest.Bytes, IsCompound: true, Class: asn1.ClassContextSpecific, Tag: PKCS10CertificationRequest},
+		Body: ChoiceConvert(CertConfirmContent{
+			CertStatus{
+				CertHash:  certHash,
+				CertReqID: 0,
+			},
+		}, CertificateConfirm),
 	}
 
 	certConfResponseBody := sendCMPMessage(certConfMessage, sharedSecret, url)
@@ -215,11 +215,19 @@ LSnod9g7TZsgTN3TY9V6xj6tERl+0/kMTcnQV55UOWAPCQqk0SrwdB9i2ebZCVgQ
 	var certConfResponseMessage PKIMessage
 	asn1.Unmarshal(certConfResponseBody, &certConfResponseMessage)
 
+	if !bytes.Equal(certConfResponseMessage.Header.TransactionID, randomTransactionID) {
+		log.Fatal("TransactionID is not equale")
+	}
 
-	_ = certificatePublicKey
+	if !bytes.Equal(randomSenderNonce, certConfResponseMessage.Header.RecipNonce) {
+		log.Fatal("Nonce is not equale")
+	}
 
-	_ = certificate
+	if certConfResponseMessage.Body.Tag != Confirmation {
+		log.Fatalf("Response message of type %v", responseMessage.Body.Tag)
+	}
 
+	fmt.Println("All done!")
 }
 
 func sendCMPMessage(requestMessage PKIMessage, sharedSecret string, url string) (body []byte) {
@@ -227,16 +235,14 @@ func sendCMPMessage(requestMessage PKIMessage, sharedSecret string, url string) 
 
 	pkiMessageAsDER, err1 := asn1.Marshal(requestMessage)
 	if err1 != nil {
-		log.Fatalf("Error marshaling structure 1:", err1)
+		log.Fatalf("Error marshaling structure 1: %v", err1)
 	}
-
-	fmt.Println(base64.StdEncoding.EncodeToString(pkiMessageAsDER))
 
 	client := &http.Client{}
 
 	resp, err := client.Post(url, "application/pkixcmp", bytes.NewReader(pkiMessageAsDER))
 	if err != nil {
-		log.Fatalf("Error:", err)
+		log.Fatalf("Error: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -246,21 +252,21 @@ func sendCMPMessage(requestMessage PKIMessage, sharedSecret string, url string) 
 
 	body, err = io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalf("Error reading response body:", err)
+		log.Fatalf("Error reading response body: %v", err)
 	}
 
 	return
 }
 
-func createRandom(n int) (randomValue []byte, err error) {
+func createRandom(n int) (randomValue []byte) {
 	randomValue = make([]byte, n)
 	nRead, err := rand.Read(randomValue)
 
 	if err != nil {
-		fmt.Errorf("Read err %v", err)
+		log.Fatalf("Read err %v", err)
 	}
 	if nRead != n {
-		fmt.Errorf("Read returned unexpected n; %d != %d", nRead, n)
+		log.Fatalf("Read returned unexpected n; %d != %d", nRead, n)
 	}
 	return
 }
