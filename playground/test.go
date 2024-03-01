@@ -30,7 +30,7 @@ func main() {
 
 	sharedSecret := "SiemensIT"
 
-	url := "https://broker.sdo-qa.siemens.cloud/.well-known/cmp"
+	url := "https://broker.sdo-dev.siemens.cloud/.well-known/cmp"
 
 	randomTransactionID := createRandom(16)
 
